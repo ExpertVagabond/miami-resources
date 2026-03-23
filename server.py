@@ -67,16 +67,21 @@ When answering:
 
 
 def _build_system_prompt(language: str = "en") -> str:
-    """Build system prompt with all programs formatted in the user's language."""
-    sections = []
+    """Build system prompt with compact program listing."""
+    lines = []
     for cat in ["housing", "food", "healthcare", "jobs", "education", "general"]:
         progs = search_programs(category=cat)
         if progs:
-            cat_label = cat.upper()
-            entries = "\n\n".join(format_program(p, language) for p in progs)
-            sections.append(f"## {cat_label}\n{entries}")
-    programs_text = "\n\n".join(sections)
-    return SYSTEM_PROMPT.format(programs=programs_text)
+            lines.append(f"\n## {cat.upper()}")
+            for p in progs:
+                lang = language if language in ("en", "es", "ht") else "en"
+                name = p["name"].get(lang, p["name"]["en"])
+                desc = p["description"].get(lang, p["description"]["en"])
+                phone = p.get("phone", "")
+                web = p.get("website", "")
+                # Compact: one line per program
+                lines.append(f"- **{name}**: {desc[:120]} | {phone} | {web}")
+    return SYSTEM_PROMPT.format(programs="\n".join(lines))
 
 
 # ── Conversation memory ─────────────────────────────────────
@@ -118,8 +123,11 @@ async def _nvidia_inference(messages: list[dict]) -> str | None:
             resp.raise_for_status()
             data = resp.json()
             return data["choices"][0]["message"]["content"]
+    except httpx.HTTPStatusError as e:
+        log.warning(f"NVIDIA NIM HTTP {e.response.status_code}: {e.response.text[:200]}")
+        return None
     except Exception as e:
-        log.warning(f"NVIDIA NIM failed: {e}")
+        log.warning(f"NVIDIA NIM failed: {type(e).__name__}: {e}")
         return None
 
 
