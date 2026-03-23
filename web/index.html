@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Miami Resources — Free Community Assistance</title>
+  <meta name="description" content="Find free housing, food, healthcare, jobs, and education programs in Miami-Dade County. Available in English, Spanish, and Haitian Creole.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=DM+Sans:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="header">
+    <div class="header__brand">
+      <h1 class="header__title">Miami<span class="header__accent">Resources</span></h1>
+      <p class="header__tagline" data-i18n="tagline">Free programs for Miami-Dade residents</p>
+    </div>
+    <div class="header__lang">
+      <button class="lang-btn active" data-lang="en" aria-label="English">EN</button>
+      <button class="lang-btn" data-lang="es" aria-label="Español">ES</button>
+      <button class="lang-btn" data-lang="ht" aria-label="Kreyòl">HT</button>
+    </div>
+  </header>
+
+  <nav class="categories" aria-label="Resource categories">
+    <button class="cat-pill" data-category="housing">
+      <span class="cat-pill__icon">🏠</span>
+      <span class="cat-pill__label" data-i18n="cat-housing">Housing</span>
+    </button>
+    <button class="cat-pill" data-category="food">
+      <span class="cat-pill__icon">🍎</span>
+      <span class="cat-pill__label" data-i18n="cat-food">Food</span>
+    </button>
+    <button class="cat-pill" data-category="healthcare">
+      <span class="cat-pill__icon">🏥</span>
+      <span class="cat-pill__label" data-i18n="cat-healthcare">Healthcare</span>
+    </button>
+    <button class="cat-pill" data-category="jobs">
+      <span class="cat-pill__icon">💼</span>
+      <span class="cat-pill__label" data-i18n="cat-jobs">Jobs</span>
+    </button>
+    <button class="cat-pill" data-category="education">
+      <span class="cat-pill__icon">📚</span>
+      <span class="cat-pill__label" data-i18n="cat-education">Education</span>
+    </button>
+    <button class="cat-pill cat-pill--crisis" data-category="crisis">
+      <span class="cat-pill__icon">🚨</span>
+      <span class="cat-pill__label" data-i18n="cat-crisis">Crisis</span>
+    </button>
+  </nav>
+
+  <main class="chat">
+    <div class="chat__messages" id="messages" role="log" aria-live="polite">
+      <div class="msg msg--bot">
+        <div class="msg__bubble">
+          <p data-i18n="welcome">Welcome to Miami Resources! I can help you find free programs for housing, food, healthcare, jobs, and education in Miami-Dade County. What do you need help with?</p>
+        </div>
+      </div>
+    </div>
+
+    <form class="chat__input" id="chatForm">
+      <input
+        type="text"
+        id="userInput"
+        class="chat__field"
+        data-i18n-placeholder="input-placeholder"
+        placeholder="Type your question..."
+        autocomplete="off"
+        required
+      >
+      <button type="submit" class="chat__send" aria-label="Send">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="22" y1="2" x2="11" y2="13"></line>
+          <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+        </svg>
+      </button>
+    </form>
+  </main>
+
+  <footer class="footer">
+    <p data-i18n="footer-crisis">
+      <strong>Crisis?</strong> Call 911 &bull; 211 Helpline: <a href="tel:3053584357">305-358-4357</a> &bull; Suicide: <a href="tel:988">988</a>
+    </p>
+    <p class="footer__tech">
+      Powered by <a href="https://ai.google.dev/adk" target="_blank" rel="noopener">Google ADK</a> + Gemini 2.5 Flash
+    </p>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
