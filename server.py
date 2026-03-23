@@ -1,23 +1,30 @@
 """
 Miami Resources — Production Server
 
-FastAPI wrapper that:
-1. Serves the static web frontend
-2. Exposes /api/chat that proxies to the Google ADK agent
+Inference stack:
+  1. NVIDIA NIM (Nemotron via NemoClaw) — primary
+  2. Google ADK / Gemini 2.5 Flash — fallback
 """
 
+import json
+import logging
 import os
 import uuid
 
+import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from google.adk.runners import Runner
-from google.adk.sessions import InMemorySessionService
 from pydantic import BaseModel
 
-from miami_resources.agent import root_agent
+from miami_resources.data.programs import PROGRAMS, format_program, search_programs
+from miami_resources.tools.lookup import (
+    check_snap_eligibility,
+    get_crisis_resources,
+)
+
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger("miami-resources")
 
 app = FastAPI(title="Miami Resources", version="1.0.0")
 
@@ -28,10 +35,52 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-session_service = InMemorySessionService()
-runner = Runner(agent=root_agent, app_name="miami_resources", session_service=session_service)
+# ── Config ───────────────────────────────────────────────────
+NVIDIA_API_KEY = os.environ.get("NVIDIA_API_KEY", "")
+NVIDIA_MODEL = "nvidia/nemotron-3-super-120b-a12b"
+NVIDIA_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
 
-USER_ID = "web_user"
+GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY", "")
+
+# ── System prompt ────────────────────────────────────────────
+SYSTEM_PROMPT = """You are **Miami Resources** — a free, multilingual assistant that helps Miami-Dade County residents find housing, food, healthcare, jobs, and education programs.
+
+LANGUAGE: Detect the user's language and respond in the same language. Support English, Spanish, and Haitian Creole.
+
+BEHAVIOR:
+- Be warm, patient, non-judgmental
+- Ask 1-2 clarifying questions to find the best match
+- Always provide phone numbers, websites, and addresses so people can take action
+- Keep responses concise and scannable (mobile users)
+- For emergencies: 911. For any need: dial 211 (305-358-4357, 24/7, multilingual)
+- Crisis: Suicide 988, DV Hotline 1-800-799-7233, Homeless 1-877-994-4357
+
+You have access to these verified Miami-Dade programs:
+
+{programs}
+
+When answering:
+1. Match the user's need to the most relevant programs
+2. Include the program name, what it does, eligibility, phone, and website
+3. If someone is in crisis, give emergency numbers FIRST
+4. If you don't know something, say so and recommend calling 211"""
+
+
+def _build_system_prompt(language: str = "en") -> str:
+    """Build system prompt with all programs formatted in the user's language."""
+    sections = []
+    for cat in ["housing", "food", "healthcare", "jobs", "education", "general"]:
+        progs = search_programs(category=cat)
+        if progs:
+            cat_label = cat.upper()
+            entries = "\n\n".join(format_program(p, language) for p in progs)
+            sections.append(f"## {cat_label}\n{entries}")
+    programs_text = "\n\n".join(sections)
+    return SYSTEM_PROMPT.format(programs=programs_text)
+
+
+# ── Conversation memory ─────────────────────────────────────
+sessions: dict[str, list[dict]] = {}
 
 
 class ChatRequest(BaseModel):
@@ -43,37 +92,129 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     response: str
     session_id: str
+    model: str
 
 
+# ── NVIDIA NIM inference (primary) ───────────────────────────
+async def _nvidia_inference(messages: list[dict]) -> str | None:
+    """Call NVIDIA NIM API with Nemotron model."""
+    if not NVIDIA_API_KEY:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(
+                NVIDIA_URL,
+                headers={
+                    "Authorization": f"Bearer {NVIDIA_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": NVIDIA_MODEL,
+                    "messages": messages,
+                    "temperature": 0.6,
+                    "max_tokens": 2048,
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return data["choices"][0]["message"]["content"]
+    except Exception as e:
+        log.warning(f"NVIDIA NIM failed: {e}")
+        return None
+
+
+# ── Google Gemini fallback ───────────────────────────────────
+async def _gemini_fallback(messages: list[dict]) -> str | None:
+    """Call Gemini 2.5 Flash via Google GenAI API."""
+    if not GOOGLE_API_KEY:
+        return None
+    try:
+        from google import genai
+
+        client = genai.Client(api_key=GOOGLE_API_KEY)
+
+        # Convert messages to Gemini format
+        system_text = ""
+        contents = []
+        for msg in messages:
+            if msg["role"] == "system":
+                system_text = msg["content"]
+            elif msg["role"] == "user":
+                contents.append({"role": "user", "parts": [{"text": msg["content"]}]})
+            elif msg["role"] == "assistant":
+                contents.append({"role": "model", "parts": [{"text": msg["content"]}]})
+
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=contents,
+            config={
+                "system_instruction": system_text,
+                "temperature": 0.6,
+                "max_output_tokens": 2048,
+            },
+        )
+        return response.text
+    except Exception as e:
+        log.warning(f"Gemini fallback failed: {e}")
+        return None
+
+
+# ── Chat endpoint ────────────────────────────────────────────
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest):
     sid = req.session_id or str(uuid.uuid4())
 
-    session = await session_service.get_session(
-        app_name="miami_resources", user_id=USER_ID, session_id=sid
-    )
-    if session is None:
-        session = await session_service.create_session(
-            app_name="miami_resources", user_id=USER_ID, session_id=sid
+    # Init or retrieve conversation
+    if sid not in sessions:
+        sessions[sid] = [
+            {"role": "system", "content": _build_system_prompt(req.language)}
+        ]
+
+    history = sessions[sid]
+    history.append({"role": "user", "content": req.message})
+
+    # Try NVIDIA NIM (Nemotron) first
+    response_text = await _nvidia_inference(history)
+    model_used = NVIDIA_MODEL
+
+    # Fallback to Gemini
+    if not response_text:
+        response_text = await _gemini_fallback(history)
+        model_used = "gemini-2.5-flash"
+
+    # Last resort
+    if not response_text:
+        model_used = "none"
+        response_text = (
+            "I'm having trouble connecting right now. "
+            "Please call 211 (305-358-4357) for immediate help — "
+            "they're available 24/7 in English, Spanish, and Creole."
         )
 
-    from google.genai.types import Content, Part
+    # Save assistant response to history
+    history.append({"role": "assistant", "content": response_text})
 
-    user_content = Content(
-        role="user",
-        parts=[Part(text=f"[Language: {req.language}] {req.message}")],
-    )
+    # Cap history at 20 messages to avoid token limits
+    if len(history) > 21:
+        sessions[sid] = [history[0]] + history[-20:]
 
-    response_text = ""
-    async for event in runner.run_async(
-        user_id=USER_ID, session_id=sid, new_message=user_content
-    ):
-        if event.is_final_response() and event.content and event.content.parts:
-            response_text = "\n".join(
-                p.text for p in event.content.parts if p.text
-            )
+    log.info(f"[{sid[:8]}] model={model_used} lang={req.language}")
 
-    return ChatResponse(response=response_text or "I couldn't process that request. Please try again or call 211.", session_id=sid)
+    return ChatResponse(response=response_text, session_id=sid, model=model_used)
+
+
+@app.get("/api/health")
+async def health():
+    return {
+        "status": "ok",
+        "models": {
+            "primary": NVIDIA_MODEL,
+            "fallback": "gemini-2.5-flash",
+        },
+        "nvidia_key": bool(NVIDIA_API_KEY),
+        "google_key": bool(GOOGLE_API_KEY),
+        "programs": len(PROGRAMS),
+    }
 
 
 # Serve static frontend
@@ -85,4 +226,4 @@ if os.path.isdir(web_dir):
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8080)
+    uvicorn.run(app, host="0.0.0.0", port=3000)
