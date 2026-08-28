@@ -5,7 +5,7 @@ description = "Free multilingual AI assistant helping Miami-Dade residents find 
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
-authors = [{ name = "Matthew Karsten", email = "MatthewKarstenConnects@gmail.com" }]
+authors = [{ name = "Matthew Karsten", email = "matthewkarstenconnects@gmail.com" }]
 
 dependencies = [
     "google-adk>=1.0.0",
